@@ -1,0 +1,33 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Based.app
+        run: |
+          chmod +x scripts/build.sh
+          ./scripts/build.sh "1.0.${{ github.run_number }}"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Based 1.0.${{ github.run_number }}
+          make_latest: true
+          body: |
+            **Download `Based.dmg`**, open it, drag Based into Applications.
+            First launch: right-click Based → Open (or System Settings → Privacy & Security → Open Anyway).
+          files: |
+            dist/Based.dmg
+            dist/Based.zip
