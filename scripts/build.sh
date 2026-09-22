@@ -43,8 +43,29 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "→ Signing (ad-hoc)…"
-codesign --force --deep --sign - "$APP"
+# Optional: Developer ID signing + notarization (set these env vars / GitHub secrets)
+#   SIGN_IDENTITY   e.g. "Developer ID Application: Niall Kiddle (TEAMID)"
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarization
+notarize() {
+  if [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_PASSWORD:-}" ]]; then
+    echo "→ Notarizing $(basename "$1")…"
+    xcrun notarytool submit "$1" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+      --password "$APPLE_APP_PASSWORD" --wait
+    return 0
+  fi
+  return 1
+}
+
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+  echo "→ Signing with Developer ID…"
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+  ditto -c -k --keepParent "$APP" "$DIST/notarize.zip"
+  if notarize "$DIST/notarize.zip"; then xcrun stapler staple "$APP"; fi
+  rm -f "$DIST/notarize.zip"
+else
+  echo "→ Signing (ad-hoc)…"
+  codesign --force --sign - "$APP"
+fi
 
 echo "→ Packaging…"
 ditto -c -k --keepParent "$APP" "$DIST/Based.zip"
@@ -54,5 +75,10 @@ cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "Based" -srcfolder "$STAGE" -ov -format UDZO "$DIST/Based.dmg" >/dev/null
 rm -rf "$STAGE" "$DIST/obj"
+
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DIST/Based.dmg"
+  if notarize "$DIST/Based.dmg"; then xcrun stapler staple "$DIST/Based.dmg"; fi
+fi
 
 echo "✓ Built $APP ($VERSION) → $DIST/Based.dmg"
