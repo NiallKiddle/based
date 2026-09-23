@@ -1,9 +1,11 @@
-// Based — turn your screen red. Menu bar only. macOS 13+.
+// Based — turn your screen red. Lives in the menu bar. macOS 13+.
 
 import SwiftUI
 import AppKit
 import CoreGraphics
 import ServiceManagement
+import Combine
+import QuartzCore
 
 // MARK: - Modes
 
@@ -134,6 +136,33 @@ final class Model: ObservableObject {
 
 // MARK: - UI
 
+private let panelRadius: CGFloat = 22
+
+/// Real behind-window blur, clipped to a rounded rect.
+struct Blur: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .popover
+        v.blendingMode = .behindWindow
+        v.state = .active
+        v.maskImage = Blur.mask(radius: panelRadius)
+        return v
+    }
+    func updateNSView(_ v: NSVisualEffectView, context: Context) {}
+
+    static func mask(radius: CGFloat) -> NSImage {
+        let edge = radius * 2 + 1
+        let img = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        img.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        img.resizingMode = .stretch
+        return img
+    }
+}
+
 struct Tile: View {
     let mode: Mode
     let selected: Bool
@@ -144,42 +173,50 @@ struct Tile: View {
         Button(action: action) {
             VStack(spacing: 7) {
                 Image(systemName: mode.icon)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 19, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
                 Text(mode.title)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
             }
-            .frame(width: 70, height: 64)
-            .foregroundStyle(selected ? Color.white : Color.primary.opacity(0.75))
+            .frame(maxWidth: .infinity)
+            .frame(height: 70)
+            .foregroundStyle(selected ? Color.white : Color.primary.opacity(0.72))
             .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(selected
                           ? AnyShapeStyle(LinearGradient(colors: mode.tint, startPoint: .topLeading, endPoint: .bottomTrailing))
-                          : AnyShapeStyle(Color.primary.opacity(hover ? 0.10 : 0.05)))
-                    .shadow(color: selected ? mode.tint.last!.opacity(0.45) : .clear, radius: 8, y: 3)
+                          : AnyShapeStyle(Color.primary.opacity(hover ? 0.10 : 0.055)))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(Color.white.opacity(selected ? 0.28 : 0.06), lineWidth: 1)
+                    }
+                    .shadow(color: selected ? mode.tint.last!.opacity(0.5) : .clear, radius: 10, y: 4)
             }
-            .contentShape(RoundedRectangle(cornerRadius: 12))
-            .scaleEffect(selected ? 1.0 : (hover ? 0.98 : 0.96))
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .scaleEffect(selected ? 1.0 : (hover ? 0.985 : 0.965))
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: selected)
+        .animation(.spring(response: 0.32, dampingFraction: 0.72), value: selected)
         .animation(.easeOut(duration: 0.12), value: hover)
     }
 }
 
 struct Panel: View {
     @ObservedObject var model = Model.shared
+    @State private var quitHover = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
                 Text("Based")
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
                     .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(quitHover ? Color.primary : Color.secondary)
+                    .onHover { quitHover = $0 }
             }
             HStack(spacing: 8) {
                 ForEach(Mode.allCases) { m in
@@ -188,7 +225,7 @@ struct Panel: View {
             }
             HStack {
                 Text("Open at login")
-                    .font(.system(size: 11))
+                    .font(.system(size: 11.5, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Toggle("", isOn: Binding(get: { model.launchAtLogin },
@@ -197,17 +234,132 @@ struct Panel: View {
                     .controlSize(.mini)
                     .labelsHidden()
             }
-            .padding(.top, 2)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
         }
-        .padding(14)
+        .padding(16)
+        .frame(width: 280)
+        .background(Blur())
+        .overlay {
+            RoundedRectangle(cornerRadius: panelRadius, style: .circular)
+                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+        }
+    }
+}
+
+// MARK: - Menu bar item + floating panel
+
+final class FloatingPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+
+    static func make(content: NSView) -> FloatingPanel {
+        let p = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                              backing: .buffered, defer: false)
+        p.isFloatingPanel = true
+        p.level = .popUpMenu
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.hidesOnDeactivate = false
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        p.contentView = content
+        p.setContentSize(content.fittingSize)
+        return p
+    }
+}
+
+final class StatusController: NSObject {
+    private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private let panel: FloatingPanel
+    private var monitors: [Any] = []
+    private var modeObserver: Any?
+    private var isShown = false
+
+    override init() {
+        panel = FloatingPanel.make(content: NSHostingView(rootView: Panel()))
+        super.init()
+        if let b = item.button {
+            b.target = self
+            b.action = #selector(toggle)
+            b.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+        setIcon(Model.shared.mode)
+        modeObserver = Model.shared.$mode.sink { [weak self] m in
+            DispatchQueue.main.async { self?.setIcon(m) }
+        }
+    }
+
+    private func setIcon(_ mode: Mode) {
+        let name = mode == .off ? "sun.max" : "sun.max.fill"
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: "Based")?
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .semibold))
+        img?.isTemplate = true
+        item.button?.image = img
+    }
+
+    @objc private func toggle() {
+        isShown ? hide() : show()
+    }
+
+    private func show() {
+        guard let button = item.button, let bw = button.window else { return }
+        isShown = true
+        let r = bw.convertToScreen(button.convert(button.bounds, to: nil))
+        let size = panel.frame.size
+        var x = r.midX - size.width / 2
+        if let vf = (bw.screen ?? NSScreen.main)?.visibleFrame {
+            x = min(max(x, vf.minX + 8), vf.maxX - size.width - 8)
+        }
+        let target = NSRect(x: x, y: r.minY - size.height - 6, width: size.width, height: size.height)
+
+        panel.setFrame(target.offsetBy(dx: 0, dy: 8), display: false)
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        panel.makeKey()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(target, display: true)
+            panel.animator().alphaValue = 1
+        }
+        button.highlight(true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.panel.invalidateShadow() }
+
+        // Close on click anywhere else, or Esc.
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
+            self?.hide()
+        }) { monitors.append(m) }
+        if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] e in
+            if e.keyCode == 53 { self?.hide(); return nil }
+            return e
+        }) { monitors.append(m) }
+    }
+
+    private func hide() {
+        guard isShown else { return }
+        isShown = false
+        monitors.forEach(NSEvent.removeMonitor)
+        monitors.removeAll()
+        item.button?.highlight(false)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.12
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self, !self.isShown else { return }
+            self.panel.orderOut(nil)
+        })
     }
 }
 
 // MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var status: StatusController?
+
     func applicationDidFinishLaunching(_ n: Notification) {
         _ = Model.shared
+        status = StatusController()
     }
     func applicationWillTerminate(_ n: Notification) {
         Gamma.reset()
@@ -215,16 +367,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct BasedApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @ObservedObject var model = Model.shared
-
-    var body: some Scene {
-        MenuBarExtra {
-            Panel()
-        } label: {
-            Image(systemName: model.mode == .off ? "sun.max" : "sun.max.fill")
-        }
-        .menuBarExtraStyle(.window)
+enum Main {
+    static let delegate = AppDelegate()
+    static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        app.delegate = delegate
+        app.run()
     }
 }

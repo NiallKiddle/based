@@ -69,12 +69,25 @@ fi
 
 echo "→ Packaging…"
 ditto -c -k --keepParent "$APP" "$DIST/Based.zip"
-STAGE="$DIST/dmg"
-mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Based" -srcfolder "$STAGE" -ov -format UDZO "$DIST/Based.dmg" >/dev/null
-rm -rf "$STAGE" "$DIST/obj"
+
+# Pretty drag-to-install DMG via dmgbuild (no Finder scripting, so it works on CI).
+# dmgbuild picks up background@2x.png automatically for Retina.
+VENV="$DIST/.venv"
+if python3 -m venv "$VENV" >/dev/null 2>&1 \
+   && "$VENV/bin/pip" install -q --disable-pip-version-check dmgbuild >/dev/null 2>&1; then
+  "$VENV/bin/dmgbuild" -s scripts/dmg_settings.py \
+    -D app="$APP" -D background=Resources/dmg/background.png -D icon=Resources/Based.icns \
+    "Based" "$DIST/Based.dmg"
+else
+  echo "  (dmgbuild unavailable — building a plain DMG)"
+  STAGE="$DIST/dmg"
+  mkdir -p "$STAGE"
+  cp -R "$APP" "$STAGE/"
+  ln -s /Applications "$STAGE/Applications"
+  hdiutil create -volname "Based" -srcfolder "$STAGE" -ov -format UDZO "$DIST/Based.dmg" >/dev/null
+  rm -rf "$STAGE"
+fi
+rm -rf "$VENV" "$DIST/obj"
 
 if [[ -n "${SIGN_IDENTITY:-}" ]]; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DIST/Based.dmg"
